@@ -38,6 +38,7 @@ import com.baidu.hugegraph.service.schema.EdgeLabelService;
 import com.baidu.hugegraph.service.schema.PropertyKeyService;
 import com.baidu.hugegraph.service.schema.VertexLabelService;
 import com.baidu.hugegraph.structure.GraphElement;
+import com.baidu.hugegraph.structure.constant.IdStrategy;
 import com.baidu.hugegraph.structure.graph.Edge;
 import com.baidu.hugegraph.structure.graph.Vertex;
 import com.baidu.hugegraph.structure.schema.PropertyKey;
@@ -87,7 +88,8 @@ public class GraphService {
         VertexLabelEntity vl = this.vlService.get(entity.getLabel(), connId);
         // Allowed front-end always pass id
         if (vl.getIdStrategy().isCustomize()) {
-            vertex.id(entity.getId());
+            Object vid = this.convertVertexId(vl.getIdStrategy(), entity.getId());
+            vertex.id(vid);
         }
         this.fillProperties(connId, vertex, entity.getProperties());
         return vertex;
@@ -96,19 +98,13 @@ public class GraphService {
     public GraphView addEdge(int connId, EdgeEntity entity) {
         HugeClient client = this.client(connId);
         GraphManager graph = client.graph();
-        EdgeLabelEntity el = this.elService.get(entity.getLabel(), connId);
-        Vertex sourceVertex = graph.getVertex(entity.getSourceId());
-        Vertex targetVertex = graph.getVertex(entity.getTargetId());
-        Ex.check(el.getSourceLabel().equals(sourceVertex.label()) &&
-                 el.getTargetLabel().equals(targetVertex.label()),
-                 "graph.edge.link-unmatched-vertex", el.getName(),
-                 el.getSourceLabel(), el.getTargetLabel(),
-                 sourceVertex.label(), targetVertex.label());
 
-        Edge edge = this.buildEdge(connId, entity, sourceVertex, targetVertex);
-        edge = graph.addEdge(edge);
+        EdgeHolder edgeHolder = this.buildEdge(connId, entity);
+        Edge edge = graph.addEdge(edgeHolder.edge);
+        Vertex source = edgeHolder.source;
+        Vertex target = edgeHolder.target;
         return GraphView.builder()
-                        .vertices(ImmutableSet.of(sourceVertex, targetVertex))
+                        .vertices(ImmutableSet.of(source, target))
                         .edges(ImmutableSet.of(edge))
                         .build();
     }
@@ -116,21 +112,48 @@ public class GraphService {
     public Edge updateEdge(int connId, EdgeEntity entity) {
         HugeClient client = this.client(connId);
         GraphManager graph = client.graph();
-        Vertex sourceVertex = graph.getVertex(entity.getSourceId());
-        Vertex targetVertex = graph.getVertex(entity.getTargetId());
-
-        Edge edge = this.buildEdge(connId, entity, sourceVertex, targetVertex);
+        EdgeHolder edgeHolder = this.buildEdge(connId, entity);
         // TODO: client should add updateEdge()
-        return graph.addEdge(edge);
+        return graph.addEdge(edgeHolder.edge);
     }
 
-    private Edge buildEdge(int connId, EdgeEntity entity,
-                           Vertex source, Vertex target) {
+    private EdgeHolder buildEdge(int connId, EdgeEntity entity) {
+        HugeClient client = this.client(connId);
+        GraphManager graph = client.graph();
+        EdgeLabelEntity el = this.elService.get(entity.getLabel(), connId);
+        VertexLabelEntity sourceVl = this.vlService.get(el.getSourceLabel(),
+                                                        connId);
+        VertexLabelEntity targetVl = this.vlService.get(el.getTargetLabel(),
+                                                        connId);
+        Object realSourceId = this.convertVertexId(sourceVl.getIdStrategy(),
+                                                   entity.getSourceId());
+        Object realTargetId = this.convertVertexId(targetVl.getIdStrategy(),
+                                                   entity.getTargetId());
+        Vertex sourceVertex = graph.getVertex(realSourceId);
+        Vertex targetVertex = graph.getVertex(realTargetId);
+
+        Ex.check(el.getSourceLabel().equals(sourceVertex.label()) &&
+                 el.getTargetLabel().equals(targetVertex.label()),
+                 "graph.edge.link-unmatched-vertex", entity.getLabel(),
+                 el.getSourceLabel(), el.getTargetLabel(),
+                 sourceVertex.label(), targetVertex.label());
+
         Edge edge = new Edge(entity.getLabel());
-        edge.source(source);
-        edge.target(target);
+        edge.source(sourceVertex);
+        edge.target(targetVertex);
         this.fillProperties(connId, edge, entity.getProperties());
-        return edge;
+        return new EdgeHolder(edge, sourceVertex, targetVertex);
+    }
+
+    private Object convertVertexId(IdStrategy idStrategy, String rawId) {
+        if (idStrategy.isCustomizeString() || idStrategy.isPrimaryKey()) {
+            return rawId;
+        } else if (idStrategy.isCustomizeNumber()) {
+            return DataTypeUtil.parseNumber("id", rawId);
+        } else {
+            assert idStrategy.isCustomizeUuid();
+            return DataTypeUtil.parseUUID("id", rawId);
+        }
     }
 
     private void fillProperties(int connId, GraphElement element,
@@ -151,6 +174,19 @@ public class GraphService {
                                             e, key, rawValue);
             }
             element.property(key, value);
+        }
+    }
+
+    private class EdgeHolder {
+
+        private Edge edge;
+        private Vertex source;
+        private Vertex target;
+
+        public EdgeHolder(Edge edge, Vertex source, Vertex target) {
+            this.edge = edge;
+            this.source = source;
+            this.target = target;
         }
     }
 }

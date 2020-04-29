@@ -87,7 +87,7 @@ public class LoadTaskController extends BaseController {
 
     @PostMapping
     public LoadTask create(@PathVariable("connId") int connId,
-                               @RequestBody LoadTask entity) {
+                           @RequestBody LoadTask entity) {
         synchronized(this.service) {
             Ex.check(this.service.count() < LIMIT,
                      "load.task.reached-limit", LIMIT);
